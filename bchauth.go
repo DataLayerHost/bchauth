@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
@@ -25,10 +26,11 @@ func init() {
 type BchAuth struct {
 	DB           *sql.DB
 	RedisClient  *redis.Client
-	DestWallet   string  `json:"dest_wallet"`
-	MinFundsCTN  float64 `json:"funds_ctn"` // CTN amount required for 1 day of access
-	PGConnString string  `json:"pg_conn_string"`
-	RedisAddr    string  `json:"redis_addr"` // Redis address
+	DestWallet   string   `json:"dest_wallet"`
+	MinFundsCTN  float64  `json:"funds_ctn"` // CTN amount required for 1 day of access
+	PGConnString string   `json:"pg_conn_string"`
+	RedisAddr    string   `json:"redis_addr"` // Redis address
+	Whitelist    []string `json:"whitelist"`  // Public key whitelist
 }
 
 // CaddyModule returns the Caddy module information.
@@ -65,13 +67,18 @@ func (bch *BchAuth) Provision(ctx caddy.Context) error {
 	return nil
 }
 
-// ServeHTTP verifies access based on blockchain transactions.
+// ServeHTTP verifies access based on blockchain transactions or whitelist.
 func (bch *BchAuth) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyhttp.Handler) error {
 	ctx := context.Background()
 	pubKey := r.Header.Get("X-Pub-Key")
 	if pubKey == "" {
 		http.Error(w, "Missing X-Pub-Key", http.StatusForbidden)
 		return nil
+	}
+
+	// Check whitelist
+	if bch.isWhitelisted(pubKey) {
+		return next.ServeHTTP(w, r)
 	}
 
 	// Check Redis cache
@@ -105,6 +112,16 @@ func (bch *BchAuth) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddy
 	bch.RedisClient.Set(ctx, cacheKey, cacheDuration, time.Duration(cacheDuration)*time.Second)
 
 	return next.ServeHTTP(w, r)
+}
+
+// isWhitelisted checks if the public key is in the whitelist.
+func (bch *BchAuth) isWhitelisted(pubKey string) bool {
+	for _, whitelistedKey := range bch.Whitelist {
+		if strings.EqualFold(whitelistedKey, pubKey) {
+			return true
+		}
+	}
+	return false
 }
 
 // checkActiveService queries the database for active service days based on the user's transactions.
@@ -188,6 +205,12 @@ func (bch *BchAuth) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if !d.Args(&bch.RedisAddr) {
 					return d.Err("expected Redis address")
 				}
+			case "whitelist":
+				args := d.RemainingArgs()
+				if len(args) == 0 {
+					return d.Err("expected at least one public key in whitelist")
+				}
+				bch.Whitelist = args
 			}
 		}
 	}
