@@ -25,15 +25,26 @@ It utilizes PostgreSQL for transaction storage and Redis for caching to optimize
 ### Example Caddyfile
 
 ```caddyfile
-:8080 {
-    route / {
+:5432 {
+    route /* {
         bchauth {
             dest_wallet "cb…"
             funds_ctn 10.0
             pg_conn_string "user=postgres password=secret host=localhost dbname=blockchain sslmode=disable"
             redis_addr "localhost:6379"
+            whitelist "publicKey1" "publicKey2" "publicKey3"
         }
-        reverse_proxy localhost:5432
+        reverse_proxy {
+            to 192.168.1.10:5432
+            to 192.168.1.11:5432
+            to 192.168.1.12:5432
+
+            lb_policy round_robin
+
+            # Optional: Health check to ensure only healthy replicas are used
+            health_path "/health"
+            health_interval 10s
+        }
     }
 }
 ```
@@ -44,6 +55,16 @@ It utilizes PostgreSQL for transaction storage and Redis for caching to optimize
 - `funds_ctn`: CTN amount required for 1 day of access.
 - `pg_conn_string`: PostgreSQL connection string.
 - `redis_addr`: Redis server address.
+- `whitelist`: List of public keys that are allowed access without a transaction.
+
+## Read-only Mode
+
+Each instance of PostgreSQL **MUST** be configured to run in read-only mode for Blockchain data. This is useful for scaling read-heavy workloads.
+
+```sql
+ALTER SYSTEM SET default_transaction_read_only = 'on';
+SELECT pg_reload_conf();
+```
 
 ## License
 
