@@ -17,7 +17,7 @@ It utilizes PostgreSQL for transaction storage and Redis for caching to optimize
 2. Build Caddy with the BchAuth module using `xcaddy`:
 
    ```bash
-   xcaddy build --with github.com/yourusername/bchauth
+   xcaddy build --with github.com/DataLayerHost/bchauth
    ```
 
 ## Configuration
