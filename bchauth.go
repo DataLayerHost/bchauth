@@ -24,13 +24,14 @@ func init() {
 }
 
 type BchAuth struct {
-	DB           *sql.DB
-	RedisClient  *redis.Client
-	DestWallet   string   `json:"dest_wallet"`
-	MinFundsCTN  float64  `json:"funds_ctn"` // CTN amount required for 1 day of access
-	PGConnString string   `json:"pg_conn_string"`
-	RedisAddr    string   `json:"redis_addr"` // Redis address
-	Whitelist    []string `json:"whitelist"`  // Public key whitelist
+	DB              *sql.DB
+	RedisClient     *redis.Client
+	DestWallet      string   `json:"dest_wallet"`
+	MinFundsCTN     float64  `json:"funds_ctn"` // CTN amount required for 1 day of access
+	PGConnString    string   `json:"pg_conn_string"`
+	ConfiguredTable string   `json:"configured_table"` // Table name for transactions
+	RedisAddr       string   `json:"redis_addr"`       // Redis address
+	Whitelist       []string `json:"whitelist"`        // Public key whitelist
 }
 
 // CaddyModule returns the Caddy module information.
@@ -126,36 +127,36 @@ func (bch *BchAuth) isWhitelisted(pubKey string) bool {
 
 // checkActiveService queries the database for active service days based on the user's transactions.
 func (bch *BchAuth) checkActiveService(address string, minFunds float64) (int, error) {
-	query := `
+	query := fmt.Sprintf(`
 		WITH RECURSIVE service_periods AS (
 			SELECT
-				t.timestamp AS start_date,
-				t.timestamp + INTERVAL '1 day' * FLOOR(t.amount / $3) AS end_date,
-				FLOOR(t.amount / $3) AS service_days
-			FROM transactions t
-			WHERE t.sender = $1 AND t.recipient = $2
+				t.created_at AS start_date,
+				t.created_at + INTERVAL '1 day' * FLOOR(t.value::NUMERIC / $2) AS end_date,
+				FLOOR(t.value::NUMERIC / $2) AS service_days
+			FROM %s t
+			WHERE t.to_addr = $1
 
 			UNION ALL
 
 			SELECT
 				CASE
-					WHEN t.timestamp > sp.end_date THEN t.timestamp
+					WHEN t.created_at > sp.end_date THEN t.created_at
 					ELSE sp.start_date
 				END AS start_date,
-				t.timestamp + INTERVAL '1 day' * FLOOR(t.amount / $3) AS end_date,
-				sp.service_days + FLOOR(t.amount / $3) AS service_days
-			FROM transactions t
+				t.created_at + INTERVAL '1 day' * FLOOR(t.value::NUMERIC / $2) AS end_date,
+				sp.service_days + FLOOR(t.value::NUMERIC / $2) AS service_days
+			FROM %s t
 			JOIN service_periods sp
-				ON t.sender = $1 AND t.recipient = $2
-			   AND t.timestamp > sp.end_date
+				ON t.to_addr = $1
+			   AND t.created_at > sp.end_date
 		)
 		SELECT SUM(service_days)
 		FROM service_periods
 		WHERE start_date <= NOW() AND end_date >= NOW();
-	`
+	`, bch.ConfiguredTable, bch.ConfiguredTable)
 
 	var totalServiceDays int
-	err := bch.DB.QueryRow(query, address, bch.DestWallet, minFunds).Scan(&totalServiceDays)
+	err := bch.DB.QueryRow(query, address, minFunds).Scan(&totalServiceDays)
 	if err != nil {
 		return 0, err
 	}
@@ -200,6 +201,10 @@ func (bch *BchAuth) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 			case "pg_conn_string":
 				if !d.Args(&bch.PGConnString) {
 					return d.Err("expected PostgreSQL connection string")
+				}
+			case "configured_table":
+				if !d.Args(&bch.ConfiguredTable) {
+					return d.Err("expected configured table name")
 				}
 			case "redis_addr":
 				if !d.Args(&bch.RedisAddr) {
