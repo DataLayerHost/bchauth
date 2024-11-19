@@ -225,9 +225,6 @@ func (bch *BchAuth) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				bch.NetworkId = networkId
 			case "whitelist":
 				args := d.RemainingArgs()
-				if len(args) == 0 {
-					return d.Err("expected at least one public key in whitelist")
-				}
 				bch.Whitelist = args
 			}
 		}
