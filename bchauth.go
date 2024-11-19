@@ -1,18 +1,19 @@
 package bchauth
 
 import (
-	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig/caddyfile"
 	"github.com/caddyserver/caddy/v2/modules/caddyhttp"
-	"github.com/core-coin/ed448"
+	"github.com/core-coin/go-core/v2/common"
+	"github.com/core-coin/go-core/v2/crypto"
 	"github.com/go-redis/redis/v8"
 	"golang.org/x/net/context"
 
@@ -31,6 +32,7 @@ type BchAuth struct {
 	PGConnString string   `json:"pg_conn_string"`
 	RedisAddr    string   `json:"redis_addr"` // Redis address
 	Whitelist    []string `json:"whitelist"`  // Public key whitelist
+	NetworkId    int64    `json:"network_id"` // Network ID for blockchain addresses
 }
 
 // CaddyModule returns the Caddy module information.
@@ -84,12 +86,17 @@ func (bch *BchAuth) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddy
 	// Check Redis cache
 	cacheKey := "access:" + pubKey
 	expiry, err := bch.RedisClient.Get(ctx, cacheKey).Result()
-	if err == nil && time.Now().Before(time.Unix(0, 0).Add(time.Second*time.Duration(expiry))) {
+	expiryInt, pasrseErr := strconv.ParseInt(expiry, 10, 64)
+	if pasrseErr != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return nil
+	}
+	if err == nil && time.Now().Before(time.Unix(0, 0).Add(time.Second*time.Duration(expiryInt))) {
 		return next.ServeHTTP(w, r)
 	}
 
 	// Generate wallet address using Ed448
-	address, err := generateAddress(pubKey)
+	address, err := bch.generateAddress(pubKey)
 	if err != nil {
 		http.Error(w, "Invalid Public Key", http.StatusForbidden)
 		return nil
@@ -164,24 +171,14 @@ func (bch *BchAuth) checkActiveService(address string, minFunds float64) (int, e
 }
 
 // generateAddress derives the wallet address from the public key using Ed448.
-func generateAddress(pubKey string) (string, error) {
-	pubKeyBytes, err := decodeHex(pubKey)
-	if err != nil || len(pubKeyBytes) != ed448.PublicKeySize {
-		return "", errors.New("invalid public key format")
+func (bch *BchAuth) generateAddress(pubKey string) (string, error) {
+	pubKeyBytes := common.FromHex(pubKey)
+	if len(pubKeyBytes) != 57 {
+		return "", errors.New("invalid public key length")
 	}
-
-	// Hash the public key using SHA-256
-	hash := sha256.Sum256(pubKeyBytes)
-
-	// Return the hash as the address
-	return fmt.Sprintf("cb…%s", fmt.Sprintf("%x", hash[:16])), nil
-}
-
-// decodeHex decodes a hex-encoded string to bytes.
-func decodeHex(hexStr string) ([]byte, error) {
-	bytes := make([]byte, len(hexStr)/2)
-	_, err := fmt.Sscanf(hexStr, "%x", &bytes)
-	return bytes, err
+	addr := crypto.SHA3(pubKeyBytes[:])[12:]
+	checksum := common.Hex2Bytes(common.CalculateChecksum(addr, bch.NetworkIDPrefix()))
+	return common.BytesToAddress(append(append(bch.NetworkIDPrefix(), checksum...), addr...)).Hex(), nil
 }
 
 // UnmarshalCaddyfile sets up the module from Caddyfile.
@@ -194,9 +191,15 @@ func (bch *BchAuth) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 					return d.Err("expected value for dest_wallet")
 				}
 			case "funds_ctn":
-				if !d.Args(&bch.MinFundsCTN) {
+				var fundsCTNStr string
+				if !d.Args(&fundsCTNStr) {
 					return d.Err("expected value for funds_ctn")
 				}
+				fundsCTN, err := strconv.ParseFloat(fundsCTNStr, 64)
+				if err != nil {
+					return d.Err("invalid value for funds_ctn")
+				}
+				bch.MinFundsCTN = fundsCTN
 			case "pg_conn_string":
 				if !d.Args(&bch.PGConnString) {
 					return d.Err("expected PostgreSQL connection string")
@@ -205,6 +208,16 @@ func (bch *BchAuth) UnmarshalCaddyfile(d *caddyfile.Dispenser) error {
 				if !d.Args(&bch.RedisAddr) {
 					return d.Err("expected Redis address")
 				}
+			case "network_id":
+				var networkIdStr string
+				if !d.Args(&networkIdStr) {
+					return d.Err("expected network ID")
+				}
+				networkId, err := strconv.ParseInt(networkIdStr, 10, 64)
+				if err != nil {
+					return d.Err("invalid network ID format")
+				}
+				bch.NetworkId = networkId
 			case "whitelist":
 				args := d.RemainingArgs()
 				if len(args) == 0 {
@@ -223,6 +236,16 @@ func (bch *BchAuth) Cleanup() error {
 		return bch.DB.Close()
 	}
 	return nil
+}
+
+func (bch *BchAuth) NetworkIDPrefix() []byte {
+	if bch.NetworkId == 1 {
+		return common.FromHex("cb")
+	} else if bch.NetworkId == 3 {
+		return common.FromHex("ab")
+	} else {
+		return common.FromHex("ce")
+	}
 }
 
 // Interface guards
