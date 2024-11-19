@@ -31,6 +31,7 @@ It utilizes PostgreSQL for transaction storage and Redis for caching to optimize
             dest_wallet "cb…"
             funds_ctn 10.0
             pg_conn_string "user=postgres password=secret host=localhost dbname=blockchain sslmode=disable"
+            configured_table "sc_cb…"
             redis_addr "localhost:6379"
             whitelist "publicKey1" "publicKey2" "publicKey3"
         }
@@ -54,6 +55,7 @@ It utilizes PostgreSQL for transaction storage and Redis for caching to optimize
 - `dest_wallet`: The target wallet to check for transactions.
 - `funds_ctn`: CTN amount required for 1 day of access.
 - `pg_conn_string`: PostgreSQL connection string.
+- `configured_table`: Table name in PostgreSQL to store transactions.
 - `redis_addr`: Redis server address.
 - `whitelist`: List of public keys that are allowed access without a transaction.
 
